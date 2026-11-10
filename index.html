@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>🐍 Snake Arena</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; touch-action:manipulation; }
+  html, body {
+    height:100%; overflow:hidden;
+    background: radial-gradient(circle, #1a1a2e, #0f0f1a);
+    color:#fff; font-family:system-ui, sans-serif;
+    user-select:none; -webkit-user-select:none;
+  }
+  body { display:flex; flex-direction:column; align-items:center; padding:6px; }
+  h1 {
+    font-size:1.2rem; margin:4px 0;
+    background:linear-gradient(90deg,#2ecc71,#3498db,#9b59b6);
+    -webkit-background-clip:text; -webkit-text-fill-color:transparent;
+  }
+  #hud {
+    display:flex; gap:4px; flex-wrap:wrap; justify-content:center;
+    margin-bottom:4px; font-size:.75rem; max-width:100%;
+  }
+  .tag {
+    padding:2px 8px; border-radius:12px;
+    background:rgba(255,255,255,.08);
+    border:1px solid rgba(255,255,255,.15);
+    font-weight:600;
+  }
+  .dead { opacity:.35; text-decoration:line-through; }
+  #wrap { position:relative; flex:1; display:flex; align-items:center; justify-content:center; min-height:0; }
+  canvas { display:block; background:#101018; border-radius:8px;
+           box-shadow:0 0 30px #3498db44; max-width:100%; max-height:100%; }
+  #ov {
+    position:absolute; inset:0; display:flex; flex-direction:column;
+    align-items:center; justify-content:center;
+    background:rgba(0,0,0,.9); border-radius:8px; text-align:center; padding:20px;
+  }
+  #ov.hidden { display:none; }
+  #ov h2 { margin-bottom:12px; font-size:1.3rem; }
+  input {
+    padding:12px 14px; border-radius:8px; border:1px solid #444;
+    background:#1a1a2e; color:#fff; font-size:1rem;
+    margin-bottom:12px; width:200px; text-align:center;
+  }
+  button {
+    padding:12px 26px; border-radius:8px; border:none; cursor:pointer;
+    background:linear-gradient(90deg,#2ecc71,#27ae60); color:#fff;
+    font-size:1rem; font-weight:700;
+  }
+  #controls {
+    display:grid; grid-template-columns:repeat(3,64px);
+    grid-template-rows:repeat(3,64px); gap:6px;
+    margin-top:8px; margin-bottom:4px;
+  }
+  .btn {
+    background:rgba(255,255,255,.1);
+    border:1px solid rgba(255,255,255,.2);
+    border-radius:12px; color:#fff; font-size:1.6rem;
+    display:flex; align-items:center; justify-content:center;
+    cursor:pointer; user-select:none;
+  }
+  .btn:active { background:rgba(52,152,219,.6); transform:scale(.95); }
+  #controls .up    { grid-column:2; grid-row:1; }
+  #controls .left  { grid-column:1; grid-row:2; }
+  #controls .down  { grid-column:2; grid-row:3; }
+  #controls .right { grid-column:3; grid-row:2; }
+  #toast { position:fixed; top:10px; right:10px; display:flex;
+           flex-direction:column; gap:6px; z-index:10; max-width:200px; }
+  .ti { background:rgba(46,204,113,.9); color:#000;
+        padding:6px 12px; border-radius:8px; font-size:.8rem; font-weight:600; }
+</style>
+</head>
+<body>
+<h1>🐍 Snake Arena</h1>
+<div id="hud"></div>
+<div id="wrap">
+  <canvas id="c" width="600" height="600"></canvas>
+  <div id="ov">
+    <h2>Rejoins l'arène !</h2>
+    <p style="margin-bottom:10px;opacity:.8">Ton pseudo :</p>
+    <input id="ni" type="text" placeholder="Pseudo..." maxlength="12">
+    <button id="jb">🎮 Rejoindre</button>
+    <p style="margin-top:14px;opacity:.6;font-size:.8rem">Utilise les flèches en bas</p>
+  </div>
+</div>
+<div id="controls">
+  <div class="btn up"    data-dir="up">⬆️</div>
+  <div class="btn left"  data-dir="left">⬅️</div>
+  <div class="btn down"  data-dir="down">⬇️</div>
+  <div class="btn right" data-dir="right">➡️</div>
+</div>
+<div id="toast"></div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const socket = io();
+const c = document.getElementById('c'), ctx = c.getContext('2d');
+const ov = document.getElementById('ov'), ni = document.getElementById('ni'),
+      jb = document.getElementById('jb'), hud = document.getElementById('hud'),
+      toastEl = document.getElementById('toast');
+let myId = null, st = null, joined = false;
+
+// Adapter la taille du canvas à l'écran
+function resize() {
+  const wrap = document.getElementById('wrap');
+  const size = Math.min(wrap.clientWidth, wrap.clientHeight);
+  c.style.width = size + 'px';
+  c.style.height = size + 'px';
+}
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => setTimeout(resize, 100));
+setTimeout(resize, 50);
+
+jb.onclick = () => {
+  const name = ni.value.trim() || 'Joueur';
+  socket.emit('join', { name });
+  ov.classList.add('hidden');
+  joined = true;
+};
+ni.onkeydown = (e) => { if (e.key === 'Enter') jb.click(); };
+
+socket.on('joined', (d) => { myId = d.id; showToast('✅ Connecté !'); });
+socket.on('state', (s) => { st = s; render(); updHud(); });
+socket.on('gameOver', (d) => showToast('🏆 ' + d.winner + ' gagne !'));
+socket.on('waiting', () => {
+  showToast('⏳ Nouvelle partie bientôt...');
+  ov.querySelector('h2').textContent = 'Partie terminée !';
+  ov.querySelector('p').textContent = 'Rejoins une nouvelle partie :';
+  ov.classList.remove('hidden');
+  setTimeout(() => { if (joined) ov.classList.add('hidden'); }, 5800);
+});
+
+// Boutons tactiles
+document.querySelectorAll('.btn').forEach(btn => {
+  const send = (e) => {
+    e.preventDefault();
+    socket.emit('direction', btn.dataset.dir);
+  };
+  btn.addEventListener('touchstart', send, {passive:false});
+  btn.addEventListener('mousedown', send);
+});
+
+// Clavier (pour PC, en bonus)
+const km = { ArrowUp:'up', ArrowDown:'down', ArrowLeft:'left', ArrowRight:'right',
+             w:'up', s:'down', a:'left', d:'right',
+             W:'up', S:'down', A:'left', D:'right' };
+window.addEventListener('keydown', (e) => {
+  const k = km[e.key];
+  if (k) { e.preventDefault(); socket.emit('direction', k); }
+});
+
+function render() {
+  if (!st) return;
+  const cs = c.width / st.gridSize;
+  ctx.fillStyle = '#101018'; ctx.fillRect(0,0,c.width,c.height);
+  ctx.strokeStyle = 'rgba(255,255,255,.03)';
+  for (let i=0;i<=st.gridSize;i++) {
+    ctx.beginPath(); ctx.moveTo(i*cs,0); ctx.lineTo(i*cs,c.height); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,i*cs); ctx.lineTo(c.width,i*cs); ctx.stroke();
+  }
+  ctx.fillStyle = '#e74c3c'; ctx.shadowColor='#e74c3c'; ctx.shadowBlur=15;
+  ctx.beginPath();
+  ctx.arc(st.food.x*cs+cs/2, st.food.y*cs+cs/2, cs*.35, 0, Math.PI*2);
+  ctx.fill(); ctx.shadowBlur = 0;
+
+  for (const p of st.players) {
+    if (!p.body) continue;
+    for (let i=p.body.length-1;i>=0;i--) {
+      const s = p.body[i];
+      ctx.globalAlpha = p.alive ? 1 : .25;
+      ctx.fillStyle = p.color;
+      if (i===0) { ctx.shadowColor = p.color; ctx.shadowBlur = p.id===myId?20:8; }
+      else ctx.shadowBlur = 0;
+      const pad = i===0?1:2;
+      ctx.fillRect(s.x*cs+pad, s.y*cs+pad, cs-pad*2, cs-pad*2);
+    }
+    ctx.shadowBlur = 0; ctx.globalAlpha = 1;
+  }
+}
+
+function updHud() {
+  if (!st) return;
+  const arr = [...st.players].sort((a,b)=>b.score-a.score);
+  hud.innerHTML = arr.map(p =>
+    `<div class="tag ${p.alive?'':'dead'}" style="color:${p.color}">${p.id===myId?'⭐ ':''}${esc(p.name)} — ${p.score}</div>`
+  ).join('');
+}
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function showToast(m) {
+  const e = document.createElement('div'); e.className = 'ti'; e.textContent = m;
+  toastEl.appendChild(e); setTimeout(() => e.remove(), 3500);
+}
+</script>
+</body>
+</html>
